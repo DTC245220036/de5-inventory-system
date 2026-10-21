@@ -1,0 +1,49 @@
+# ============================================================================
+# CẤU HÌNH PROMETHEUS (monitoring/prometheus/prometheus.yml)
+# Thu thập metrics từ: Container (cAdvisor), Web App, Nginx Proxy, MySQL DB
+# ============================================================================
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    project: 'de5-inventory-system'
+    environment: 'production'
+
+scrape_configs:
+  # 1. Giám sát bản thân Prometheus Server
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 2. Giám sát Ứng dụng Web Quản lý Kho hàng (Node.js / Express + Business Metrics)
+  - job_name: 'inventory-app'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['inventory-app:3000']
+        labels:
+          tier: 'application'
+          service: 'inventory-app'
+
+  # 3. Giám sát Web Server / Reverse Proxy Nginx (qua nginx-prometheus-exporter)
+  - job_name: 'nginx-proxy'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+        labels:
+          tier: 'web-proxy'
+          service: 'nginx-proxy'
+
+  # 4. Giám sát Cơ sở dữ liệu MySQL 8.0 (qua mysqld-exporter)
+  - job_name: 'mysql-db'
+    static_configs:
+      - targets: ['mysqld-exporter:9104']
+        labels:
+          tier: 'database'
+          service: 'mysql-db'
+
+  # 5. Giám sát toàn bộ Docker Containers (CPU, RAM, Network, Disk I/O qua cAdvisor)
+  - job_name: 'cadvisor-containers'
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          tier: 'infrastructure'
+          service: 'cadvisor'

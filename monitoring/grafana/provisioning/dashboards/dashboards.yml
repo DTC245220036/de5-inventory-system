@@ -1,0 +1,16 @@
+# ============================================================================
+# TỰ ĐỘNG NẠP DASHBOARD GIÁM SÁT HỆ THỐNG KHO HÀNG (ĐỀ 5) VÀO GRAFANA
+# ============================================================================
+apiVersion: 1
+
+providers:
+  - name: 'De5 Inventory System Dashboards'
+    orgId: 1
+    folder: 'De 5 - Quan Ly Kho Hang'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 15
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
