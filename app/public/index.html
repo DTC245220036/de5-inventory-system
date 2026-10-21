@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hệ thống Quản lý Kho hàng</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+            <path d="m3.3 7 8.7 5 8.7-5" />
+            <path d="M12 22V12" />
+          </svg>
+        </div>
+        <h1>Hệ thống Quản lý Kho hàng</h1>
+      </div>
+      <div class="status-group">
+        <span id="health-badge" class="badge badge-ok">● Đang kiểm tra kết nối...</span>
+        <a href="/metrics" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Prometheus /metrics</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-content">
+    <!-- KPI Cards -->
+    <section class="kpi-grid" aria-label="Chỉ số tổng quan kho hàng">
+      <article class="kpi-card">
+        <span class="kpi-label">Tổng nhóm hàng (Model)</span>
+        <strong class="kpi-value" id="kpi-products">0</strong>
+        <span class="kpi-sub">Đơn vị hàng lưu kho: <b id="kpi-units">0</b></span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Tổng giá trị tồn kho</span>
+        <strong class="kpi-value text-primary" id="kpi-value">0 ₫</strong>
+        <span class="kpi-sub">Tính theo đơn giá niêm yết</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Cảnh báo sắp hết hàng</span>
+        <strong class="kpi-value text-danger" id="kpi-low-stock">0</strong>
+        <span class="kpi-sub">Tồn kho &le; Định mức tối thiểu</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Nhà cung cấp &amp; Giao dịch</span>
+        <strong class="kpi-value text-success" id="kpi-suppliers">0 NCC</strong>
+        <span class="kpi-sub">Nhập: <b id="kpi-in">0</b> | Xuất: <b id="kpi-out">0</b></span>
+      </article>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs-nav" aria-label="Điều hướng phân hệ">
+      <button type="button" class="tab-btn active" data-tab="tab-inventory">📦 Tồn kho &amp; Sản phẩm</button>
+      <button type="button" class="tab-btn" data-tab="tab-transactions">🔄 Phiếu Nhập / Xuất kho</button>
+      <button type="button" class="tab-btn" data-tab="tab-suppliers">🏢 Nhà cung cấp</button>
+    </nav>
+
+    <div id="toast-message" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <!-- TAB 1: TỒN KHO & SẢN PHẨM -->
+    <section id="tab-inventory" class="tab-panel active">
+      <div class="panel-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2>Danh sách Hàng hóa Tồn kho</h2>
+            <div class="filter-bar">
+              <input type="search" id="search-product" placeholder="Tìm theo Mã Model, tên hàng, vị trí kệ..." />
+              <label class="checkbox-inline">
+                <input type="checkbox" id="filter-low-stock" />
+                <span>Chỉ hiện hàng sắp hết</span>
+              </label>
+              <button type="button" id="btn-refresh-products" class="btn btn-outline btn-sm">Làm mới</button>
+            </div>
+          </div>
+          <div class="table-scroll" role="region" aria-label="Bảng danh sách hàng tồn kho" tabindex="0">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">Mã Model</th>
+                  <th scope="col">Tên hàng hóa</th>
+                  <th scope="col">Nhóm hàng</th>
+                  <th scope="col">Vị trí kệ</th>
+                  <th scope="col" class="num">Đơn giá</th>
+                  <th scope="col" class="num">Tồn kho</th>
+                  <th scope="col">Trạng thái</th>
+                  <th scope="col">Nhà cung cấp</th>
+                  <th scope="col">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="products-tbody">
+                <tr><td colspan="9">Đang tải dữ liệu...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="card">
+          <h2 id="product-form-title">Thêm Sản phẩm Mới</h2>
+          <form id="form-add-product" class="stack-form">
+            <input type="hidden" id="prod-edit-id" value="" />
+            <div class="form-row">
+              <label for="prod-sku">Mã Model *</label>
+              <input type="text" id="prod-sku" required placeholder="VD: MDL-RTR-007" />
+            </div>
+            <div class="form-row">
+              <label for="prod-name">Tên hàng hóa *</label>
+              <input type="text" id="prod-name" required placeholder="VD: Router MikroTik CCR2004" />
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="prod-category">Nhóm hàng *</label>
+                <input type="text" id="prod-category" required placeholder="Màn hình &amp; Chuột" />
+              </div>
+              <div class="form-row">
+                <label for="prod-unit">Đơn vị tính</label>
+                <input type="text" id="prod-unit" value="Cái" />
+              </div>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="prod-price">Đơn giá (VNĐ)</label>
+                <input type="number" id="prod-price" min="0" step="1000" value="12500000" required />
+              </div>
+              <div class="form-row">
+                <label for="prod-location">Vị trí lưu kho</label>
+                <input type="text" id="prod-location" value="Khu A - Kệ 03" />
+              </div>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="prod-qty" id="prod-qty-label">Tồn đầu kỳ</label>
+                <input type="number" id="prod-qty" min="0" value="15" required />
+              </div>
+              <div class="form-row">
+                <label for="prod-min">Định mức tối thiểu</label>
+                <input type="number" id="prod-min" min="1" value="5" required />
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="prod-supplier">Nhà cung cấp</label>
+              <select id="prod-supplier">
+                <option value="">-- Chọn nhà cung cấp --</option>
+              </select>
+            </div>
+            <div class="form-actions">
+              <button type="submit" id="btn-submit-product" class="btn btn-primary">+ Lưu Sản phẩm vào Kho</button>
+              <button type="button" id="btn-cancel-product" class="btn btn-outline" hidden>Hủy sửa</button>
+            </div>
+          </form>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 2: PHIẾU NHẬP / XUẤT KHO -->
+    <section id="tab-transactions" class="tab-panel" hidden>
+      <div class="panel-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2>Lịch sử Giao dịch Nhập / Xuất Kho</h2>
+            <div class="filter-bar">
+              <button type="button" id="btn-sync-tx" class="btn btn-edit btn-sm">🔄 Đồng bộ theo Tồn kho hiện tại</button>
+              <button type="button" id="btn-refresh-tx" class="btn btn-outline btn-sm">Làm mới</button>
+            </div>
+          </div>
+          <div class="table-scroll" role="region" aria-label="Bảng lịch sử nhập xuất kho" tabindex="0">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">Mã phiếu</th>
+                  <th scope="col">Loại</th>
+                  <th scope="col">Mã Model</th>
+                  <th scope="col">Tên sản phẩm</th>
+                  <th scope="col" class="num">Số lượng</th>
+                  <th scope="col" class="num">Đơn giá</th>
+                  <th scope="col">Người thực hiện</th>
+                  <th scope="col">Ghi chú</th>
+                  <th scope="col">Thời gian</th>
+                </tr>
+              </thead>
+              <tbody id="tx-tbody">
+                <tr><td colspan="9">Đang tải dữ liệu...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="card">
+          <h2>Lập Phiếu Nhập / Xuất Kho</h2>
+          <form id="form-add-tx" class="stack-form">
+            <div class="form-row">
+              <label for="tx-product">Chọn sản phẩm *</label>
+              <select id="tx-product" required>
+                <option value="">-- Chọn sản phẩm --</option>
+              </select>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="tx-type">Loại giao dịch *</label>
+                <select id="tx-type" required>
+                  <option value="IN">📥 NHẬP KHO (IN)</option>
+                  <option value="OUT">📤 XUẤT KHO (OUT)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="tx-qty">Số lượng *</label>
+                <input type="number" id="tx-qty" min="1" value="5" required />
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="tx-user">Người lập phiếu</label>
+              <input type="text" id="tx-user" value="Nguyễn Quản Kho" required />
+            </div>
+            <div class="form-row">
+              <label for="tx-note">Lý do / Ghi chú phiếu</label>
+              <input type="text" id="tx-note" placeholder="VD: Nhập bổ sung lô hàng quý IV" />
+            </div>
+            <button type="submit" class="btn btn-primary">Xác nhận Phiếu Nhập / Xuất</button>
+          </form>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 3: NHÀ CUNG CẤP -->
+    <section id="tab-suppliers" class="tab-panel" hidden>
+      <div class="panel-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2>Danh sách Đối tác &amp; Nhà cung cấp</h2>
+            <button type="button" id="btn-refresh-suppliers" class="btn btn-outline btn-sm">Làm mới</button>
+          </div>
+          <div class="table-scroll" role="region" aria-label="Bảng nhà cung cấp" tabindex="0">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">Mã NCC</th>
+                  <th scope="col">Tên Nhà cung cấp</th>
+                  <th scope="col">Người liên hệ</th>
+                  <th scope="col">Điện thoại</th>
+                  <th scope="col">Email</th>
+                  <th scope="col" class="num">Số mặt hàng</th>
+                  <th scope="col">Địa chỉ</th>
+                  <th scope="col">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="suppliers-tbody">
+                <tr><td colspan="8">Đang tải dữ liệu...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="card">
+          <h2 id="supplier-form-title">Thêm Nhà Cung Cấp</h2>
+          <form id="form-add-supplier" class="stack-form">
+            <input type="hidden" id="sup-edit-id" value="" />
+            <div class="form-row">
+              <label for="sup-code">Mã Nhà cung cấp *</label>
+              <input type="text" id="sup-code" required placeholder="VD: SUP-005" />
+            </div>
+            <div class="form-row">
+              <label for="sup-name">Tên công ty / Nhà cung cấp *</label>
+              <input type="text" id="sup-name" required placeholder="VD: Công ty TNHH Thiết bị Số" />
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="sup-contact">Người liên hệ *</label>
+                <input type="text" id="sup-contact" required placeholder="Họ và tên" />
+              </div>
+              <div class="form-row">
+                <label for="sup-phone">Số điện thoại *</label>
+                <input type="text" id="sup-phone" required placeholder="0909xxxxxx" />
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="sup-email">Email</label>
+              <input type="email" id="sup-email" placeholder="contact@company.vn" />
+            </div>
+            <div class="form-row">
+              <label for="sup-address">Địa chỉ</label>
+              <input type="text" id="sup-address" placeholder="Quận 1, TP. Hồ Chí Minh" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" id="btn-submit-supplier" class="btn btn-primary">+ Thêm Nhà Cung Cấp</button>
+              <button type="button" id="btn-cancel-supplier" class="btn btn-outline" hidden>Hủy sửa</button>
+            </div>
+          </form>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

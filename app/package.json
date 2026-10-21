@@ -1,0 +1,15 @@
+{
+  "name": "de5-inventory-management-app",
+  "version": "1.0.0",
+  "description": "He thong Quan ly Kho hang (Inventory Management System) - De tai so 5",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "mysql2": "^3.11.0",
+    "prom-client": "^15.1.3"
+  }
+}
