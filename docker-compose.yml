@@ -1,0 +1,293 @@
+# ============================================================================
+# DOCKER COMPOSE - ĐỀ TÀI 5: HỆ THỐNG QUẢN LÝ KHO HÀNG (INVENTORY SYSTEM)
+# Bao gồm:
+#   1. Web App (Node.js/Express - Non-root container)
+#   2. Database MySQL 8.0 + phpMyAdmin
+#   3. Nginx Reverse Proxy (HTTPS Self-Signed SSL + OWASP Security Headers)
+#   4. Giám sát: Prometheus + Grafana + cAdvisor + Nginx Exporter + MySQL Exporter
+#   5. Log tập trung: Loki + Promtail (Hỗ trợ truy vấn LogQL)
+#   6. Hardening: Network Isolation (3 mạng), Non-root, No-New-Privileges, Cap-Drop
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # 1. CƠ SỞ DỮ LIỆU MYSQL 8.0 (Cô lập hoàn toàn trong mạng backend_net)
+  # --------------------------------------------------------------------------
+  mysql-db:
+    image: mysql:8.0
+    container_name: de5-mysql-db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/my.cnf:/etc/mysql/conf.d/custom-hardening.cnf:ro
+    networks:
+      - backend_net
+    # HARDENING: Không mở cổng 3306 ra ngoài máy host, ngăn chặn truy cập trực tiếp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 768M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  # --------------------------------------------------------------------------
+  # 2. CÔNG CỤ QUẢN TRỊ CƠ SỞ DỮ LIỆU PHPMYADMIN
+  # --------------------------------------------------------------------------
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    container_name: de5-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    environment:
+      PMA_HOST: mysql-db
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 16M
+      TZ: Asia/Ho_Chi_Minh
+    # HARDENING: Chỉ bind vào 127.0.0.1 của máy quản trị
+    ports:
+      - "127.0.0.1:${PMA_PORT:-8081}:80"
+    networks:
+      - backend_net
+      - frontend_net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+
+  # --------------------------------------------------------------------------
+  # 3. ỨNG DỤNG WEB QUẢN LÝ KHO HÀNG (Non-root user 'node' UID 1000)
+  # --------------------------------------------------------------------------
+  inventory-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: de5-inventory-app
+    restart: unless-stopped
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: mysql-db
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE}
+      TZ: Asia/Ho_Chi_Minh
+    # HARDENING: Không expose trực tiếp port 3000 ra ngoài, bắt buộc đi qua Nginx Proxy
+    expose:
+      - "3000"
+    networks:
+      - frontend_net
+      - backend_net
+      - monitoring_net
+    # HARDENING: Chạy Read-Only Root Filesystem + Drop toàn bộ Linux Capabilities thừa
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 384M
+
+  # --------------------------------------------------------------------------
+  # 4. NGINX REVERSE PROXY (HTTPS Tự ký + Security Headers + Rate Limiting)
+  # --------------------------------------------------------------------------
+  nginx-proxy:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: de5-nginx-proxy
+    restart: unless-stopped
+    depends_on:
+      - inventory-app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx_logs:/var/log/nginx
+    networks:
+      - frontend_net
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+
+  # --------------------------------------------------------------------------
+  # 5. PROMETHEUS EXPORTERS (Thu thập Metrics từ Nginx, MySQL, Containers)
+  # --------------------------------------------------------------------------
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.1.0
+    container_name: de5-nginx-exporter
+    restart: unless-stopped
+    depends_on:
+      - nginx-proxy
+    command:
+      - "--nginx.scrape-uri=http://nginx-proxy:80/nginx_status"
+    networks:
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: de5-mysqld-exporter
+    restart: unless-stopped
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: "exporter:${MYSQLD_EXPORTER_PASSWORD}@(mysql-db:3306)/"
+    command:
+      - "--mysqld.address=mysql-db:3306"
+      - "--mysqld.username=exporter"
+    networks:
+      - backend_net
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: de5-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - monitoring_net
+
+  # --------------------------------------------------------------------------
+  # 6. HỆ THỐNG GIÁM SÁT PROMETHEUS + GRAFANA
+  # --------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: de5-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: de5-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-Grafana@Admin#2026!Secure}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+  # --------------------------------------------------------------------------
+  # 7. HỆ THỐNG LOG TẬP TRUNG LOKI + PROMTAIL
+  # --------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: de5-loki
+    user: "0:0"
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/tmp/loki
+    networks:
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: de5-promtail
+    user: "0:0"
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - nginx_logs:/var/log/nginx:ro
+    networks:
+      - monitoring_net
+    security_opt:
+      - no-new-privileges:true
+
+# ============================================================================
+# HARDENING: NETWORK ISOLATION (Phân tách 3 vùng mạng độc lập)
+# ============================================================================
+networks:
+  # Mạng Frontend: Chỉ cho phép Nginx Proxy giao tiếp với Web App & phpMyAdmin
+  frontend_net:
+    driver: bridge
+  # Mạng Backend (Internal): Cô lập hoàn toàn Database MySQL, không lộ ra ngoài
+  backend_net:
+    driver: bridge
+    internal: true
+  # Mạng Monitoring: Dành riêng cho Prometheus, Grafana, Loki, Promtail & Exporters
+  monitoring_net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  nginx_logs:
+  prometheus_data:
+  grafana_data:
+  loki_data:
